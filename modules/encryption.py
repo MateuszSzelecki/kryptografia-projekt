@@ -4,199 +4,266 @@ from PIL import Image, ImageTk
 import os
 import sys
 
-# Ensure we can import from root directory
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from keccak import KeccakSponge
+# Upewniamy się, że importujemy Twój moduł keccak
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+try:
+    from keccak import KeccakSponge
+except ImportError:
+    print("Błąd: Nie znaleziono pliku keccak.py lub operations.py")
 
 class EncryptionModule(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.pack(fill=tk.BOTH, expand=True)
-        
-        # Determine paths
-        if getattr(sys, 'frozen', False):
-            self.base_path = sys._MEIPASS
-        else:
-            self.base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            
-        self.image_path = os.path.join(self.base_path, "assets", "agh.png")
+        self.parent = parent
         
         self.original_image_pil = None
-        self.encrypted_image_pil = None
-        self.original_photo = None
-        self.encrypted_photo = None
+        self.password_locked = False 
         
+        # --- USTAWIENIA WIZUALIZACJI ---
+        self.process_size = (100, 100) 
+        self.display_size = (500, 500)
+        # -------------------------------
+
         self.setup_ui()
-        self.load_and_display_image()
+        self.setup_bindings()
+        
+        self.after(100, self.generate_perfect_checkerboard)
+        self.focus_set()
 
     def setup_ui(self):
-        # Top Control Panel
-        control_frame = ttk.Frame(self)
-        control_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+        # Główny kontener
+        control = ttk.Frame(self)
+        control.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
         
-        # Key Entry
-        ttk.Label(control_frame, text="Klucz:").pack(side=tk.LEFT, padx=5)
-        self.key_entry = ttk.Entry(control_frame, width=20)
-        self.key_entry.insert(0, "tajny_klucz_agh")
-        self.key_entry.pack(side=tk.LEFT, padx=5)
-        
-        # Rounds Entry
-        ttk.Label(control_frame, text="Rundy:").pack(side=tk.LEFT, padx=5)
-        self.rounds_var = tk.IntVar(value=6) # Default reduced for speed demo
-        self.rounds_spin = ttk.Spinbox(control_frame, from_=1, to=24, textvariable=self.rounds_var, width=5)
-        self.rounds_spin.pack(side=tk.LEFT, padx=5)
-        
-        encrypt_btn = ttk.Button(control_frame, text="Szyfruj Obraz", command=self.encrypt_image)
-        encrypt_btn.pack(side=tk.LEFT, padx=10)
-        
-        # Info Label
-        ttk.Label(control_frame, text="(Obraz jest pomniejszany dla wydajności)", font=('Arial', 8, 'italic')).pack(side=tk.LEFT, padx=10)
+        # --- GÓRNY PASEK: HASŁO I SUWAK ---
+        top_bar = ttk.Frame(control)
+        top_bar.pack(side=tk.TOP, fill=tk.X)
 
-        # Main Content Area (Split View)
-        content_frame = ttk.Frame(self)
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # 1. Hasło (Lewa)
+        pass_frame = ttk.Frame(top_bar)
+        pass_frame.pack(side=tk.LEFT, padx=(0, 15))
         
-        # Left Panel - Original
-        self.left_panel = ttk.LabelFrame(content_frame, text="Oryginał")
-        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-        self.original_label = ttk.Label(self.left_panel)
-        self.original_label.pack(expand=True)
+        ttk.Label(pass_frame, text="Klucz:", font=("Arial", 9, "bold")).pack(side=tk.LEFT)
+        self.pass_entry = ttk.Entry(pass_frame, width=12)
+        self.pass_entry.pack(side=tk.LEFT, padx=5)
+        self.pass_entry.bind("<Return>", lambda e: self.lock_password())
+        self.pass_entry.bind("<KeyRelease>", lambda e: self.process_image() if not self.password_locked else None)
         
-        # Right Panel - Encrypted
-        self.right_panel = ttk.LabelFrame(content_frame, text="Obraz Zaszyfrowany")
-        self.right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
-        self.encrypted_label = ttk.Label(self.right_panel, text="Tu pojawi się zaszyfrowany obraz")
-        self.encrypted_label.pack(expand=True)
+        self.lock_btn = ttk.Button(pass_frame, text="OK", width=4, command=self.lock_password)
+        self.lock_btn.pack(side=tk.LEFT)
 
-    def load_and_display_image(self):
-        if not os.path.exists(self.image_path):
-            self.original_label.config(text=f"Brak pliku: {self.image_path}")
+        # 2. Suwak (Prawa)
+        slider_frame = ttk.Frame(top_bar)
+        slider_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        self.step_var = tk.DoubleVar(value=0)
+        self.scale = ttk.Scale(slider_frame, from_=0, to=15, variable=self.step_var, orient=tk.HORIZONTAL)
+        self.scale.pack(side=tk.TOP, fill=tk.X, pady=2)
+        self.scale.bind("<ButtonRelease-1>", self.on_slider_release)
+        self.scale.configure(command=self.on_scale_change)
+
+        # --- DOLNY PASEK: OPIS ETAPU ---
+        # Tutaj dajemy dużo miejsca na tekst
+        self.desc_frame = ttk.LabelFrame(control, text="Analiza Operacji")
+        self.desc_frame.pack(side=tk.TOP, fill=tk.X, pady=(5, 0))
+        
+        self.info_label = ttk.Label(
+            self.desc_frame, 
+            text="Wybierz etap...", 
+            font=("Segoe UI", 10), 
+            wraplength=780, # Zwijanie tekstu
+            justify="left"
+        )
+        self.info_label.pack(fill=tk.X, padx=5, pady=5)
+
+        # --- OBSZAR ROBOCZY ---
+        content = ttk.Frame(self)
+        content.pack(fill=tk.BOTH, expand=True, padx=5, pady=0)
+        
+        self.left_panel = ttk.LabelFrame(content, text="Wejście")
+        self.left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.lbl_orig = ttk.Label(self.left_panel)
+        self.lbl_orig.pack(expand=True)
+        
+        self.right_panel = ttk.LabelFrame(content, text="Stan Wewnętrzny")
+        self.right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.lbl_enc = ttk.Label(self.right_panel, text="...")
+        self.lbl_enc.pack(expand=True)
+
+    def setup_bindings(self):
+        self.winfo_toplevel().bind_all('<Left>', self.move_left)
+        self.winfo_toplevel().bind_all('<Right>', self.move_right)
+        self.bind('<Button-1>', lambda e: self.focus_set())
+
+    def lock_password(self):
+        if self.pass_entry.get():
+            self.password_locked = True
+            self.pass_entry.config(state='disabled')
+            self.lock_btn.config(state='disabled')
+            self.process_image()
+            self.focus_set()
+
+    def move_left(self, event):
+        if self.focus_get() == self.pass_entry and not self.password_locked: return
+        if self.focus_get() == self.scale: return
+        val = self.step_var.get()
+        if val > 0:
+            self.step_var.set(val - 1)
+            self.update_label_text_only(val - 1)
+            self.process_image()
+
+    def move_right(self, event):
+        if self.focus_get() == self.pass_entry and not self.password_locked: return
+        if self.focus_get() == self.scale: return
+        val = self.step_var.get()
+        if val < 15:
+            self.step_var.set(val + 1)
+            self.update_label_text_only(val + 1)
+            self.process_image()
+
+    def on_scale_change(self, val):
+        self.update_label_text_only(val)
+        if float(val).is_integer():
+             self.process_image()
+
+    def generate_perfect_checkerboard(self):
+        img = Image.new("L", self.process_size, color=0)
+        pixels = img.load()
+        square_w = 5 
+        for y in range(self.process_size[1]):
+            for x in range(self.process_size[0]):
+                if ((x // square_w) + (y // square_w)) % 2 == 1:
+                    pixels[x, y] = 255
+                else:
+                    pixels[x, y] = 0
+        self.load_image_object(img)
+
+    def load_image_object(self, img_pil):
+        self.processing_source = img_pil
+        disp = self.processing_source.resize(self.display_size, Image.Resampling.NEAREST)
+        self.photo_orig = ImageTk.PhotoImage(disp)
+        self.lbl_orig.config(image=self.photo_orig)
+        self.step_var.set(0)
+        self.update_label_text_only(0)
+        self.process_image()
+
+    def get_detailed_description(self, steps):
+        if steps == 0: 
+            return "STAN 0: START (INICJALIZACJA)\nTo jest Twój stan początkowy (macierz 5x5). Każdy duży kwadrat to 1 bajt (8 bitów) danych. Jeśli wpisałeś hasło, kolory są już zmienione przez XOR z kluczem, zanim algorytm ruszył."
+        
+        round_num = (steps - 1) // 5
+        step_idx = (steps - 1) % 5
+        
+        # Słownik z dokładnymi opisami
+        descs = {
+            "Theta": (
+                "KROK 1: THETA (DYFUZJA / ROZMYCIE)",
+                "Operacja: XOR z sumą sąsiednich kolumn.\n"
+                "Efekt wizualny: Szachownica zanika lub 'szarzeje'.\n"
+                "Dlaczego? Każdy piksel 'zaciąga' informację od 10 innych pikseli (sąsiednie kolumny). "
+                "Jeśli obok był biały piksel, wpływa on na czarny piksel. To niszczy lokalne wzory."
+            ),
+            "Rho": (
+                "KROK 2: RHO (PRZESUNIĘCIE WARTOŚCI)",
+                "Operacja: Rotacja bitowa (Bitwise Rotate) wzdłuż osi Z.\n"
+                "Efekt wizualny: Zmiana odcieni szarości (ale kształty zostają).\n"
+                "Dlaczego? Przesuwamy bity wewnątrz bajtu (np. 00000011 -> 00000110). "
+                "Piksel nie zmienia miejsca (x,y), zmienia się tylko jego wartość liczbowa (jasność)."
+            ),
+            "Pi": (
+                "KROK 3: PI (PERMUTACJA / TASOWANIE)",
+                "Operacja: Przestawienie współrzędnych (x, y) -> (y, 2x+3y).\n"
+                "Efekt wizualny: Pocięcie obrazu i 'teleportacja' kwadratów.\n"
+                "Dlaczego? To fizyczne przeniesienie bajtu w inne miejsce macierzy 5x5. "
+                "Struktura geometryczna (np. linie szachownicy) zostaje rozerwana i rozrzucona po całym stanie."
+            ),
+            "Chi": (
+                "KROK 4: CHI (KONFUZJA / CHAOS)",
+                "Operacja: Nieliniowa funkcja A = A ^ ((~B) & C).\n"
+                "Efekt wizualny: Całkowita utrata przewidywalności kolorów.\n"
+                "Dlaczego? To jedyny krok, którego nie da się prosto odwrócić (przez bramkę AND). "
+                "Kolor piksela zależy teraz od skomplikowanej relacji z dwoma sąsiadami. Obraz zaczyna przypominać szum."
+            ),
+            "Iota": (
+                "KROK 5: IOTA (ASYMETRIA)",
+                "Operacja: XOR z losową stałą rundy (tylko w rogu).\n"
+                "Efekt wizualny: Niewielka zmiana (często niewidoczna dla oka).\n"
+                "Dlaczego? Matematycznie zapobiega to sytuacji, w której identyczne wejścia w różnych rundach dawałyby ten sam wynik. Łamie symetrię."
+            )
+        }
+        
+        keys = ["Theta", "Rho", "Pi", "Chi", "Iota"]
+        key = keys[step_idx]
+        title, body = descs[key]
+        
+        return f"RUNDA {round_num} | {title}\n{body}"
+
+    def update_label_text_only(self, val):
+        steps = int(float(val))
+        txt = self.get_detailed_description(steps)
+        self.info_label.config(text=txt)
+
+    def on_slider_release(self, event):
+        self.process_image()
+
+    def process_image(self):
+        if not hasattr(self, 'processing_source'): return
+        
+        target_steps = int(self.step_var.get())
+        password = self.pass_entry.get()
+        
+        if target_steps == 0 and not password:
+            self.lbl_enc.config(image=self.photo_orig)
             return
+
+        w = 8 
+        block_size = 25 
+        k = KeccakSponge(rate=200, capacity=0, w=w, rounds=10)
+        
+        img_bytes = self.processing_source.tobytes()
+        key_bytes = password.encode('utf-8')
+        out_bytes = bytearray()
+        
+        class StopProcessing(Exception): pass
+        current_step_counter = 0
+        
+        def my_callback(name, state):
+            nonlocal current_step_counter
+            current_step_counter += 1
+            if current_step_counter >= target_steps:
+                raise StopProcessing
+
+        for i in range(0, len(img_bytes), block_size):
+            chunk = img_bytes[i : i + block_size]
+            k.state = [[[0] * w for _ in range(5)] for _ in range(5)]
             
+            if key_bytes:
+                k.xorowanie_do_stanu((key_bytes * 10)[:block_size])
+
+            k.xorowanie_do_stanu(chunk)
+            
+            current_step_counter = 0
+            if target_steps > 0:
+                try:
+                    k.keccak_f(callback=my_callback)
+                except StopProcessing:
+                    pass 
+                except Exception: pass
+
+            processed = k.stan_na_bajty(block_size)
+            out_bytes.extend(processed[:len(chunk)])
+
         try:
-            pil_img = Image.open(self.image_path).convert("RGB")
-            self.original_image_pil = pil_img
-            
-            # Defer resizing to after the window is drawn to get accurate dimensions
-            self.after(100, self.resize_and_show_original)
+            res_img = Image.frombytes("L", self.process_size, bytes(out_bytes))
+            disp_large = res_img.resize(self.display_size, Image.Resampling.NEAREST)
+            self.photo_enc = ImageTk.PhotoImage(disp_large)
+            self.lbl_enc.config(image=self.photo_enc)
         except Exception as e:
-            self.original_label.config(text=f"Błąd: {e}")
+            print(f"Display error: {e}")
 
-    def resize_and_show_original(self):
-        if self.original_image_pil is None:
-            return
-            
-        # Calc available space in left panel
-        w = self.left_panel.winfo_width() - 20
-        h = self.left_panel.winfo_height() - 20
-        
-        if w <= 1 or h <= 1:
-            # Retry if geometry isn't ready
-            self.after(100, self.resize_and_show_original)
-            return
-            
-        img_w, img_h = self.original_image_pil.size
-        scale = min(w / img_w, h / img_h)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
-        
-        self.display_w = new_w
-        self.display_h = new_h
-        
-        resized = self.original_image_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        self.original_photo = ImageTk.PhotoImage(resized)
-        
-        self.original_label.config(image=self.original_photo, text="")
-
-    def encrypt_image(self):
-        if self.original_image_pil is None:
-            messagebox.showerror("Błąd", "Nie załadowano obrazu.")
-            return
-            
-        key = self.key_entry.get() # Key is unused in visual permutation mode (or we could XOR it first)
-        # For visualization of "Rounds vs Operations", unkeyed permutation or fixed key is better to see the mechanics.
-        # But let's keep the key concept: Key mixing -> Initial State -> XOR Image Block -> Permute -> Output.
-        
-        try:
-            rounds = int(self.rounds_var.get())
-        except ValueError:
-            rounds = 24
-            
-        # Optimization: Resize source image
-        max_dim = 256
-        img_to_process = self.original_image_pil.copy()
-        img_to_process.thumbnail((max_dim, max_dim), Image.Resampling.BICUBIC)
-        
-        img_data = img_to_process.tobytes()
-        
-        # UI Update
-        self.encrypted_label.config(text="Przetwarzanie...", image="")
-        self.update_idletasks()
-        
-        try:
-            # VISUALIZATION MODE: Direct Block Permutation (ECB-like)
-            # We want to see how 'rounds' affect the mixing of pixels.
-            # We will split image into 200-byte blocks (Full State), absorb, permute (N rounds), squeeze.
-            
-            # Rate = 1600 bits (200 bytes) to use full state for data
-            # Capacity = 0 (Theoretical max for unkeyed sponge, insecure but good for vis)
-            block_size = 200
-            
-            keccak = KeccakSponge(rate=1600, capacity=0, w=64, rounds=rounds)
-            
-            encrypted_bytes = bytearray()
-            
-            # Simple pre-calc for key to mix into initial state (optional, let's keep it simple: Pure Permutation of Data)
-            # If we want to show "Encryption", we should XOR key. 
-            # Let's do: State = Block ^ KeyHash; State = f(State); Output = State.
-            # But simpler for "Rounds Effect": State = Block; State = f(State).
-            
-            # Let's stick to pure permutation of the image data to see the "Avalanche/Diffusion" of the structure.
-            
-            total_len = len(img_data)
-            for i in range(0, total_len, block_size):
-                chunk = img_data[i : i + block_size]
-                
-                # Reset state manually for "ECB" mode (independent blocks)
-                keccak.state = [[[0] * 64 for _ in range(5)] for _ in range(5)]
-                
-                # Load data (XOR into zero state = set data)
-                keccak.xorowanie_do_stanu(chunk)
-                
-                # Apply Permutation (specified rounds)
-                keccak.keccak_f()
-                
-                # Extract Result
-                processed_chunk = keccak.stan_na_bajty(len(chunk)) # Only take what we need
-                encrypted_bytes.extend(processed_chunk)
-                
-            # Create image
-            encrypted_img = Image.frombytes("RGB", img_to_process.size, bytes(encrypted_bytes))
-            self.encrypted_image_pil = encrypted_img
-            
-            self.show_encrypted_result()
-            
-        except Exception as e:
-            messagebox.showerror("Błąd Szyfrowania", str(e))
-
-    def show_encrypted_result(self):
-        if self.encrypted_image_pil is None:
-            return
-            
-        # Resize to fit right panel, matching the "display" size of the original if possible
-        # or just maximize to panel
-        w = self.right_panel.winfo_width() - 20
-        h = self.right_panel.winfo_height() - 20
-        
-        # We start from the small encrypted image, so we scale UP
-        img_w, img_h = self.encrypted_image_pil.size
-        
-        # Use simple scaling to fit panel
-        scale = min(w / img_w, h / img_h)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
-        
-        resized = self.encrypted_image_pil.resize((new_w, new_h), Image.Resampling.NEAREST) # Nearest to see the pixels
-        self.encrypted_photo = ImageTk.PhotoImage(resized)
-        
-        self.encrypted_label.config(image=self.encrypted_photo, text="")
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("Wizualizacja Keccak SHA-3")
+    app = EncryptionModule(root)
+    root.mainloop()
